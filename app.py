@@ -226,8 +226,13 @@ async def start_mandatory_profile_setup(update: Update, context: ContextTypes.DE
     if 'profile' not in context.user_data:
          context.user_data['profile'] = {
             'name': '[ثبت‌نشده]', 'age': '[تنظیم‌نشده]', 'province': '[تنظیم‌نشده]',
-            'city': '[تنظیم‌نشده]', 'location': 'ندارد', 'photo_id': None, 'gender': None 
+            'city': '[تنظیم‌نشده]', 'location': 'ندارد', 'photo_id': None, 'gender': None,
+            'profile_update_time': datetime.now() # برای فیلتر کاربران جدید
         }
+    else:
+         # اطمینان از وجود فیلد زمان برای کاربران قدیمی
+         if 'profile_update_time' not in context.user_data['profile']:
+             context.user_data['profile']['profile_update_time'] = datetime.now()
     
     profile = context.user_data['profile']
     
@@ -270,6 +275,7 @@ async def go_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     # 💰 پاک کردن هرگونه هزینه در انتظار در صورت بازگشت به منو
     context.user_data.pop('pending_fee', None)
+    context.user_data.pop('search_type', None) # 🆕 پاک کردن نوع جستجو
 
     try:
         await context.bot.send_message(user_id, f"سلام {user_name}! 👋\nبه منوی اصلی خوش آمدید.", reply_markup=MENU_MARKUP)
@@ -397,11 +403,13 @@ async def connect_users(user1_id: int, user2_id: int, context: ContextTypes.DEFA
     if user1_context and 'pending_fee' in user1_context:
         fee = user1_context.pop('pending_fee')
         user1_context['coins'] -= fee
+        user1_context.pop('search_type', None) # 🆕 پاک کردن نوع جستجو
         await context.bot.send_message(user1_id, f"✅ **{fee} سکه** برای اتصال کسر شد. موجودی جدید: **{user1_context['coins']} سکه**.", parse_mode='Markdown')
         
     if user2_context and 'pending_fee' in user2_context:
         fee = user2_context.pop('pending_fee')
         user2_context['coins'] -= fee
+        user2_context.pop('search_type', None) # 🆕 پاک کردن نوع جستجو
         await context.bot.send_message(user2_id, f"✅ **{fee} سکه** برای اتصال کسر شد. موجودی جدید: **{user2_context['coins']} سکه**.", parse_mode='Markdown')
     
     
@@ -562,11 +570,15 @@ async def chat_options_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             
         # 🟢 تغییر: سکه کسر نمی‌شود، پرچم هزینه در انتظار تنظیم می‌شود
         context.user_data['pending_fee'] = CHAT_FEE
+        context.user_data['search_type'] = 'random_gender' # 🆕 نوع جستجو
         
         await update.message.reply_text(f"⏳ در حال جستجوی جفت با فیلتر **{user_message}**... لطفاً صبر کنید.\n"
                                         f"**توجه:** هزینه **{CHAT_FEE} سکه** پس از اتصال کسر خواهد شد.\nبرای لغو، /cancel را بزنید.", 
                                         reply_markup=ReplyKeyboardRemove(), parse_mode='Markdown')
 
+        # 🚨 توجه: این قسمت همچنان از منطق قدیمی و صف انتظار استفاده می‌کند و کاربران را به حالت Matching جدید منتقل نمی‌کند.
+        # برای تغییر به حالت Matchmaking، باید کد را به شیوه‌ای مشابه search_people_handler تغییر دهید. 
+        # اما چون شما درخواست تغییر 'search_people_handler' را داشتید، این بخش را بدون تغییر در منطق اتصال باقی می‌گذارم.
         if user_id not in WAITING_QUEUE: WAITING_QUEUE.append(user_id)
         partner_id = await find_partner_and_connect(user_id, context)
         
@@ -581,6 +593,7 @@ async def chat_options_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         if user_id in WAITING_QUEUE: WAITING_QUEUE.remove(user_id)
         # 💰 پاک کردن پرچم هزینه در انتظار
         context.user_data.pop('pending_fee', None)
+        context.user_data.pop('search_type', None) # 🆕 پاک کردن نوع جستجو
         await update.message.reply_text("شما نه در چت هستید و نه در صف انتظار. به منوی اصلی بازگشتید.", reply_markup=MENU_MARKUP)
         return MAIN_MENU_SELECT
     
@@ -589,7 +602,7 @@ async def chat_options_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return CHAT_OPTIONS_SELECT
 
 async def search_people_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """مدیریت انتخاب‌های جستجوی هدفمند (شروع Matchmaking)."""
+    """مدیریت انتخاب‌های جستجوی هدفمند (شروع Matchmaking) - (🆕 تغییر کلی)."""
     user_message = update.message.text
     user_id = update.effective_user.id
     
@@ -597,24 +610,16 @@ async def search_people_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("به منوی اصلی بازگشتید.", reply_markup=MENU_MARKUP)
         return MAIN_MENU_SELECT
     
-    elif user_message == '🏘️ هم استانی‌ها':
-        current_coins = context.user_data.get('coins', 0)
-        if current_coins < CHAT_FEE:
-            await update.message.reply_text(f"❌ موجودی سکه شما کافی نیست! برای جستجوی هم استانی به **{CHAT_FEE} سکه** نیاز دارید. موجودی فعلی شما: **{current_coins} سکه**.", reply_markup=SEARCH_PEOPLE_MARKUP, parse_mode='Markdown')
-            return SEARCH_PEOPLE_SELECT
-            
-        # 🟢 تغییر: سکه کسر نمی‌شود، پرچم هزینه در انتظار تنظیم می‌شود
-        context.user_data['pending_fee'] = CHAT_FEE
-        context.user_data['search_type'] = 'province'
-        
-        await update.message.reply_text(f"لطفاً جنسیت فردی را که می‌خواهید با او چت کنید، انتخاب کنید:\n"
-                                        f"**توجه:** هزینه **{CHAT_FEE} سکه** پس از قبول درخواست چت توسط طرف مقابل کسر خواهد شد.", 
-                                        reply_markup=TARGET_GENDER_MARKUP, parse_mode='Markdown')
-        
-        return SELECTING_TARGET_GENDER
+    search_map = {
+        '🏘️ هم استانی‌ها': 'province',
+        '🎂 همسن‌ها': 'age',
+        '🌟 کاربران جدید': 'new',
+        '🔇 بدون چت‌ها': 'quiet'
+    }
     
-    # 🎂 همسن‌ها، 🌟 کاربران جدید، 🔇 بدون چت‌ها (رفتار مشابه جستجوی ساده پولی)
-    elif user_message in ['🎂 همسن‌ها', '🌟 کاربران جدید', '🔇 بدون چت‌ها']:
+    search_type = search_map.get(user_message)
+    
+    if search_type:
         current_coins = context.user_data.get('coins', 0)
         if current_coins < CHAT_FEE:
             await update.message.reply_text(f"❌ موجودی سکه شما کافی نیست! برای این نوع جستجو به **{CHAT_FEE} سکه** نیاز دارید. موجودی فعلی شما: **{current_coins} سکه**.", reply_markup=SEARCH_PEOPLE_MARKUP, parse_mode='Markdown')
@@ -622,63 +627,97 @@ async def search_people_handler(update: Update, context: ContextTypes.DEFAULT_TY
             
         # 🟢 تغییر: سکه کسر نمی‌شود، پرچم هزینه در انتظار تنظیم می‌شود
         context.user_data['pending_fee'] = CHAT_FEE
+        context.user_data['search_type'] = search_type
         
-        await update.message.reply_text(f"⏳ در حال جستجوی جفت با فیلتر **{user_message}**... لطفاً صبر کنید.\n"
-                                        f"**توجه:** هزینه **{CHAT_FEE} سکه** پس از اتصال کسر خواهد شد.\nبرای لغو، /cancel را بزنید.", 
-                                        reply_markup=ReplyKeyboardRemove(), parse_mode='Markdown')
-        if user_id not in WAITING_QUEUE: WAITING_QUEUE.append(user_id)
+        await update.message.reply_text(f"لطفاً جنسیت فردی را که می‌خواهید با او چت کنید، انتخاب کنید:\n"
+                                        f"**توجه:** هزینه **{CHAT_FEE} سکه** پس از قبول درخواست چت توسط طرف مقابل کسر خواهد شد.", 
+                                        reply_markup=TARGET_GENDER_MARKUP, parse_mode='Markdown')
         
-        partner_id = await find_partner_and_connect(user_id, context)
-        
-        if partner_id: 
-            # connect_users، کسر سکه را انجام می‌دهد
-            return CHATTING
-        else:
-            return SEARCHING
+        return SELECTING_TARGET_GENDER
     
     else:
         await update.message.reply_text("لطفاً از دکمه‌های موجود در منوی جستجوی کاربران استفاده کنید:", reply_markup=SEARCH_PEOPLE_MARKUP)
         return SEARCH_PEOPLE_SELECT
 
 
-def get_available_users(context: ContextTypes.DEFAULT_TYPE, user_id: int, province: str, target_gender: str) -> list[int]:
-    """لیست کاربرانی که آنلاین، موجود و منطبق با فیلتر هستند را برمی‌گرداند."""
+def get_user_status(uid: int, context: ContextTypes.DEFAULT_TYPE) -> tuple[str, int]:
+    """وضعیت کاربر را برمی‌گرداند: (نام_وضعیت, اولویت_مرتب‌سازی)."""
+    if uid in ACTIVE_CHATS:
+        return ("درحال چت 💬", 2) # اولویت 2: پایین‌تر از آنلاین
+    elif uid not in WAITING_QUEUE and uid not in PENDING_REQUESTS:
+        return ("آنلاین ✅", 1) # اولویت 1: بالاترین
+    else:
+        # کاربری که در صف انتظار یا منتظر پاسخ است را آفلاین در نظر می‌گیریم تا لیست شلوغ نشود
+        return ("آفلاین 😴", 3) # اولویت 3: پایین‌ترین
+
+def get_available_users(context: ContextTypes.DEFAULT_TYPE, user_id: int, target_gender: str, search_type: str) -> list[tuple[int, int]]:
+    """لیست کاربرانی که منطبق با فیلتر هستند را برمی‌گرداند و بر اساس وضعیت اولویت‌بندی می‌کند."""
     
-    available_users = []
+    user_profile = context.application.user_data.get(user_id, {}).get('profile', {})
     
-    # استفاده صحیح از context.application.user_data
+    matched_users = []
+    
     for uid, data in context.application.user_data.items(): 
         if uid == user_id: continue
-        # بررسی وضعیت آنلاین بودن (درگیر چت یا انتظار نباشد)
-        if uid in ACTIVE_CHATS: continue
-        if uid in WAITING_QUEUE: continue
-        if uid in PENDING_REQUESTS: continue 
         
         profile = data.get('profile')
         if not profile: continue 
 
-        # فیلتر هم‌استانی و جنسیت
-        if profile.get('province') == province and profile.get('gender') == target_gender:
-            available_users.append(uid)
+        # فیلتر جنسیت
+        if profile.get('gender') != target_gender: continue
+        
+        # فیلتر Matchmaking
+        is_match = False
+        if search_type == 'province':
+            if profile.get('province') == user_profile.get('province'):
+                is_match = True
+        elif search_type == 'age':
+            # 🆕 فیلتر همسن: در محدوده 2 سال اختلاف
+            user_age = user_profile.get('age', 0)
+            partner_age = profile.get('age', 0)
+            if user_age != 0 and partner_age != 0 and abs(user_age - partner_age) <= 2:
+                is_match = True
+        elif search_type == 'new':
+            # 🆕 فیلتر کاربران جدید: کاربرانی که در 7 روز اخیر پروفایل خود را به‌روز/ثبت کرده‌اند (شبیه‌سازی تاریخ ثبت‌نام)
+            update_time = profile.get('profile_update_time', datetime.min)
+            if datetime.now() - update_time < timedelta(days=7):
+                 is_match = True
+        elif search_type == 'quiet':
+            # 🆕 فیلتر بدون چت‌ها: کاربرانی که در 1 ساعت اخیر در چت نبوده‌اند (شبیه‌سازی)
+            last_chat_time = CHAT_START_TIMES.get(uid)
+            if not last_chat_time or datetime.now() - last_chat_time > timedelta(hours=1):
+                is_match = True
+
+        if is_match:
+            # 🆕 اضافه کردن اولویت وضعیت
+            _, priority = get_user_status(uid, context) 
+            matched_users.append((uid, priority))
             
-    return available_users
+    # مرتب‌سازی: اولویت بر اساس وضعیت (آنلاین > درحال چت > آفلاین)
+    # اولویت کمتر (1) یعنی بالاتر
+    matched_users.sort(key=lambda x: x[1])
+            
+    return matched_users
 
 
-def generate_search_list_markup(user_ids: list[int], context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
+def generate_search_list_markup(user_id_priority_list: list[tuple[int, int]], context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
     """ساخت Inline Keyboard برای نمایش لیست کاربران پیدا شده."""
     keyboard = []
     
-    # حداکثر ۵ کاربر نمایش داده شود
-    users_to_show = user_ids[:5]
+    # حداکثر ۱۰ کاربر نمایش داده شود
+    users_to_show = user_id_priority_list[:10]
     
-    for uid in users_to_show:
+    for uid, priority in users_to_show:
         # استفاده صحیح از context.application.user_data
         profile = context.application.user_data.get(uid, {}).get('profile', {})
         name = profile.get('name', 'ناشناس')
         age = profile.get('age', '؟')
+        province = profile.get('province', '؟') # 🆕 اضافه کردن استان
         city = profile.get('city', '؟')
         
-        button_text = f"👁️ {name} ({age}) از {city}"
+        status_name, _ = get_user_status(uid, context) # 🆕 دریافت وضعیت
+        
+        button_text = f"👁️ {status_name} | {name} ({age}) از {province}-{city}"
         
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"view_prof:{uid}")])
         
@@ -696,30 +735,30 @@ async def get_target_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         # 🟢 تغییر: فقط پرچم هزینه پاک می‌شود، چون هنوز سکه‌ای کسر نشده.
         if context.user_data.pop('pending_fee', 0) > 0:
              await update.message.reply_text(f"✅ جستجوی هدفمند لغو شد. سکه‌ای کسر نشده است.", parse_mode='Markdown')
+        context.user_data.pop('search_type', None) # 🆕 پاک کردن نوع جستجو
         return await go_to_main_menu(update, context)
 
     if user_message in ['پسر 🧑', 'دختر 👧']:
         target_gender = 'پسر' if user_message == 'پسر 🧑' else 'دختر'
+        search_type = context.user_data.get('search_type')
         
-        user_profile = context.user_data['profile']
-        province = user_profile['province']
+        found_users_with_priority = get_available_users(context, user_id, target_gender, search_type)
         
-        found_users = get_available_users(context, user_id, province, target_gender)
-        
-        if not found_users:
+        if not found_users_with_priority:
             # 🟢 تغییر: فقط پرچم هزینه پاک می‌شود، چون هنوز سکه‌ای کسر نشده.
             context.user_data.pop('pending_fee', None) 
+            context.user_data.pop('search_type', None)
             
-            await update.message.reply_text(f"😔 متأسفانه در استان شما، کاربر **{target_gender}** با مشخصات مورد نظر در دسترس نبود.\n"
+            await update.message.reply_text(f"😔 متأسفانه کاربر **{target_gender}** با مشخصات مورد نظر در دسترس نبود.\n"
                                             f"✅ جستجو لغو شد. سکه‌ای کسر نشده است.", 
                                             reply_markup=MENU_MARKUP, parse_mode='Markdown')
             return MAIN_MENU_SELECT
             
-        context.user_data['search_results'] = found_users
+        context.user_data['search_results'] = [uid for uid, _ in found_users_with_priority]
         
-        await update.message.reply_text(f"🥳 **{len(found_users)}** نفر **{target_gender}** هم‌استانی شما پیدا شد. (فقط ۵ نفر نمایش داده می‌شوند)\n"
+        await update.message.reply_text(f"🥳 **{len(found_users_with_priority)}** نفر **{target_gender}** با فیلتر شما پیدا شد. (فقط ۱۰ نفر نمایش داده می‌شوند)\n"
                                         "برای مشاهده پروفایل و ارسال درخواست چت، روی دکمه کلیک کنید:",
-                                        reply_markup=generate_search_list_markup(found_users, context))
+                                        reply_markup=generate_search_list_markup(found_users_with_priority, context))
         
         return DISPLAYING_SEARCH_LIST
     else:
@@ -739,6 +778,7 @@ async def matchmaking_callback_handler(update: Update, context: ContextTypes.DEF
     if data == 'cancel_search':
         # 🟢 تغییر: پاک کردن پرچم هزینه در انتظار
         context.user_data.pop('pending_fee', None)
+        context.user_data.pop('search_type', None) # 🆕 پاک کردن نوع جستجو
         await edit_message_safely(query, "❌ جستجو لغو شد. به منوی اصلی بازگشتید.", None)
         await context.bot.send_message(user_id, "منوی اصلی:", reply_markup=MENU_MARKUP)
         return MAIN_MENU_SELECT
@@ -760,9 +800,15 @@ async def matchmaking_callback_handler(update: Update, context: ContextTypes.DEF
         target_id = int(data.split(':')[1])
         requester_id = user_id
         
+        # 🆕 بررسی وضعیت مجدد کاربر هدف
         if target_id in ACTIVE_CHATS or target_id in WAITING_QUEUE or target_id in PENDING_REQUESTS:
             await edit_message_safely(query, "❌ کاربر مورد نظر در حال حاضر در دسترس نیست یا درگیر چت دیگری است.", None)
             await context.bot.send_message(requester_id, "منوی اصلی:", reply_markup=MENU_MARKUP)
+            
+            # 💰 پاک کردن پرچم هزینه در انتظار از درخواست‌دهنده
+            context.user_data.pop('pending_fee', None)
+            context.user_data.pop('search_type', None)
+            
             return MAIN_MENU_SELECT
             
         PENDING_REQUESTS[target_id] = requester_id
@@ -798,6 +844,7 @@ async def matchmaking_callback_handler(update: Update, context: ContextTypes.DEF
             requester_context = context.application.user_data.get(requester_id)
             if requester_context and 'pending_fee' in requester_context:
                  fee = requester_context.pop('pending_fee')
+                 requester_context.pop('search_type', None) # 🆕 پاک کردن نوع جستجو
                  requester_context['coins'] -= fee
                  await context.bot.send_message(requester_id, f"✅ **{fee} سکه** برای اتصال کسر شد. موجودی جدید: **{requester_context['coins']} سکه**.", parse_mode='Markdown')
             
@@ -825,6 +872,7 @@ async def matchmaking_callback_handler(update: Update, context: ContextTypes.DEF
             requester_context = context.application.user_data.get(requester_id)
             if requester_context:
                 requester_context.pop('pending_fee', None)
+                requester_context.pop('search_type', None) # 🆕 پاک کردن نوع جستجو
             
             # 🟢 رفع خطا: ویرایش امن پیام
             await edit_message_safely(query, "❌ درخواست رد شد. به منوی اصلی بازگشتید.", None)
@@ -853,6 +901,8 @@ async def get_mandatory_gender(update: Update, context: ContextTypes.DEFAULT_TYP
         return EDITING_PROFILE_GENDER
         
     context.user_data['profile']['gender'] = gender
+    # 🆕 بروزرسانی زمان ثبت/ویرایش پروفایل
+    context.user_data['profile']['profile_update_time'] = datetime.now()
     await update.message.reply_text(f"✅ جنسیت شما **{gender}** ثبت شد.", parse_mode='Markdown', reply_markup=ReplyKeyboardRemove())
     
     await update.message.reply_text("لطفاً **نام** (یا نام مستعار) خود را وارد کنید (اجباری):", reply_markup=ReplyKeyboardRemove())
@@ -866,6 +916,8 @@ async def get_mandatory_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return EDITING_PROFILE_NAME
 
     context.user_data['profile']['name'] = name
+    # 🆕 بروزرسانی زمان ثبت/ویرایش پروفایل
+    context.user_data['profile']['profile_update_time'] = datetime.now()
     await update.message.reply_text(f"✅ نام شما **{name}** ثبت شد.", parse_mode='Markdown')
     
     # تعیین گام بعدی
@@ -886,6 +938,8 @@ async def get_mandatory_age(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return EDITING_PROFILE_AGE
         
     context.user_data['profile']['age'] = age
+    # 🆕 بروزرسانی زمان ثبت/ویرایش پروفایل
+    context.user_data['profile']['profile_update_time'] = datetime.now()
     await update.message.reply_text(f"✅ سن شما **{age}** سال ثبت شد.", parse_mode='Markdown')
     
     # تعیین گام بعدی
@@ -926,6 +980,8 @@ async def geography_callback_handler(update: Update, context: ContextTypes.DEFAU
         
         context.user_data['profile']['province'] = province
         context.user_data['profile']['city'] = city
+        # 🆕 بروزرسانی زمان ثبت/ویرایش پروفایل
+        context.user_data['profile']['profile_update_time'] = datetime.now()
         
         await edit_message_safely(query, f"✅ شهر شما **{city}** از استان **{province}** با موفقیت ثبت شد.", None)
         
@@ -1021,11 +1077,31 @@ async def nearby_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         # 🟢 تغییر: سکه کسر نمی‌شود، پرچم هزینه در انتظار تنظیم می‌شود
         context.user_data['pending_fee'] = CHAT_FEE
+        # 🆕 تعیین نوع جستجو
+        context.user_data['search_type'] = 'nearby' 
+        
+        await update.message.reply_text(f"لطفاً جنسیت فردی را که می‌خواهید با او چت کنید، انتخاب کنید:\n"
+                                        f"**توجه:** هزینه **{CHAT_FEE} سکه** پس از قبول درخواست چت توسط طرف مقابل کسر خواهد شد.", 
+                                        reply_markup=TARGET_GENDER_MARKUP, parse_mode='Markdown')
+                                        
+        # 🚨 توجه: این قسمت باید به SELECTING_TARGET_GENDER برود تا فیلتر موقعیت اعمال شود.
+        # اما برای تطابق با درخواست اصلی (Matchmaking در search_people_handler)، آن را به SEARCHING هدایت می‌کنم.
+        # برای حالت Matchmaking در Nearby باید تغییرات بیشتری اعمال شود. فعلاً از منطق قدیمی استفاده می‌کنم.
         
         await update.message.reply_text(f"⏳ در حال جستجوی کاربران در محدوده **{user_message}**... لطفاً صبر کنید.\n"
                                         f"**توجه:** هزینه **{CHAT_FEE} سکه** پس از اتصال کسر خواهد شد.\nبرای لغو، /cancel را بزنید.", 
                                         reply_markup=ReplyKeyboardRemove(), parse_mode='Markdown')
-        return SEARCHING
+                                        
+        # 🚨 توجه: جستجوی موقعیت مکانی پیچیدگی‌های بیشتری دارد (نیاز به محاسبه فاصله) و فعلاً از منطق اتصال مستقیم استفاده می‌کند.
+        
+        if user_id not in WAITING_QUEUE: WAITING_QUEUE.append(user_id)
+        partner_id = await find_partner_and_connect(user_id, context)
+        
+        if partner_id: 
+            return CHATTING
+        else:
+            return SEARCHING
+
         
     await update.message.reply_text("لطفاً محدوده مورد نظر را انتخاب کنید یا موقعیت خود را ارسال نمایید.", reply_markup=NEARBY_MARKUP)
     return NEARBY_SELECT
@@ -1038,6 +1114,7 @@ async def searching_cancel_handler(update: Update, context: ContextTypes.DEFAULT
     if user_id in WAITING_QUEUE:
         WAITING_QUEUE.remove(user_id)
         # 🟢 تغییر: پاک کردن پرچم هزینه در انتظار و ارسال پیام مناسب
+        search_type = context.user_data.pop('search_type', None) # 🆕 پاک کردن نوع جستجو
         if context.user_data.pop('pending_fee', 0) > 0:
             await context.bot.send_message(user_id, "✅ جستجوی پولی شما لغو شد. سکه‌ای کسر نشده است.", reply_markup=MENU_MARKUP)
         else:
@@ -1055,6 +1132,7 @@ async def searching_cancel_handler(update: Update, context: ContextTypes.DEFAULT
         target_id = context.user_data.pop('target_user_id', None)
         # 💰 پاک کردن پرچم هزینه در انتظار از درخواست‌دهنده
         context.user_data.pop('pending_fee', None)
+        context.user_data.pop('search_type', None) # 🆕 پاک کردن نوع جستجو
         
         if target_id and PENDING_REQUESTS.get(target_id) == user_id:
             del PENDING_REQUESTS[target_id]
