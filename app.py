@@ -222,7 +222,9 @@ async def check_mandatory_profile(context: ContextTypes.DEFAULT_TYPE) -> bool:
     return True
 
 async def start_mandatory_profile_setup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """کاربر را به اولین فیلد اجباری هدایت می‌کند."""
+    """کاربر را به اولین فیلد اجباری هدایت می‌کند. (✅ اصلاح شده: فلو مرکزی)"""
+    user_id = update.effective_user.id
+    
     if 'profile' not in context.user_data:
          context.user_data['profile'] = {
             'name': '[ثبت‌نشده]', 'age': '[تنظیم‌نشده]', 'province': '[تنظیم‌نشده]',
@@ -237,10 +239,11 @@ async def start_mandatory_profile_setup(update: Update, context: ContextTypes.DE
     profile = context.user_data['profile']
     
     # اطمینان از خروج از حالت‌های Matchmaking هنگام شروع
-    user_id = update.effective_user.id
     if user_id in PENDING_REQUESTS: 
         del PENDING_REQUESTS[user_id]
         
+    # --- منطق بررسی فیلدها و هدایت ---
+    
     if profile['gender'] is None:
         await context.bot.send_message(user_id, "👋 خوش آمدید!\nبرای شروع چت ناشناس، ابتدا باید **جنسیت** خود را ثبت کنید (اجباری):", reply_markup=GENDER_MARKUP_MANDATORY, parse_mode='Markdown')
         return EDITING_PROFILE_GENDER 
@@ -262,6 +265,7 @@ async def start_mandatory_profile_setup(update: Update, context: ContextTypes.DE
         await context.bot.send_message(user_id, f"استان شما **{profile['province']}** ثبت شد.\nلطفاً **شهر** خود را از لیست انتخاب کنید (اجباری):", reply_markup=generate_city_markup(profile['province'], is_mandatory=True, current_state=GET_MANDATORY_CITY), parse_mode='Markdown')
         return GET_MANDATORY_CITY
     
+    # اگر همه فیلدها کامل بودند، به منوی اصلی برو
     return await go_to_main_menu(update, context)
 
 async def go_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -894,7 +898,7 @@ async def matchmaking_callback_handler(update: Update, context: ContextTypes.DEF
 # ... (توابع ویرایش پروفایل بدون تغییر باقی می‌مانند) ...
 
 async def get_mandatory_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """دریافت جنسیت اجباری."""
+    """دریافت جنسیت اجباری. (✅ اصلاح شده: فراخوانی start_mandatory_profile_setup)"""
     gender = update.message.text.split(' ')[0] 
     if gender not in ['پسر', 'دختر']:
         await update.message.reply_text("❌ لطفاً جنسیت خود را از دکمه‌ها انتخاب کنید.")
@@ -903,13 +907,13 @@ async def get_mandatory_gender(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data['profile']['gender'] = gender
     # 🆕 بروزرسانی زمان ثبت/ویرایش پروفایل
     context.user_data['profile']['profile_update_time'] = datetime.now()
-    await update.message.reply_text(f"✅ جنسیت شما **{gender}** ثبت شد.", parse_mode='Markdown', reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(f"✅ جنسیت شما **{gender}** ثبت شد. در حال رفتن به مرحله بعد...", parse_mode='Markdown', reply_markup=ReplyKeyboardRemove())
     
-    await update.message.reply_text("لطفاً **نام** (یا نام مستعار) خود را وارد کنید (اجباری):", reply_markup=ReplyKeyboardRemove())
-    return EDITING_PROFILE_NAME 
+    # 🟢 هدایت به فیلد بعدی (فراخوانی مجدد تابع مرکزی)
+    return await start_mandatory_profile_setup(update, context)
 
 async def get_mandatory_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """دریافت نام اجباری/ویرایش نام."""
+    """دریافت نام اجباری/ویرایش نام. (✅ اصلاح شده: فراخوانی start_mandatory_profile_setup)"""
     name = update.message.text.strip()
     if not name or len(name) < 2 or len(name) > 30:
         await update.message.reply_text("❌ نام معتبر نیست. لطفاً یک نام یا نام مستعار (بین ۲ تا ۳۰ کاراکتر) وارد کنید.")
@@ -918,17 +922,19 @@ async def get_mandatory_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data['profile']['name'] = name
     # 🆕 بروزرسانی زمان ثبت/ویرایش پروفایل
     context.user_data['profile']['profile_update_time'] = datetime.now()
-    await update.message.reply_text(f"✅ نام شما **{name}** ثبت شد.", parse_mode='Markdown')
+    await update.message.reply_text(f"✅ نام شما **{name}** ثبت شد. در حال رفتن به مرحله بعد...", parse_mode='Markdown')
     
-    # تعیین گام بعدی
-    if context.user_data['profile']['age'] in [None, '[تنظیم‌نشده]']:
-        await update.message.reply_text("لطفاً **سن** خود را به صورت عدد وارد کنید (اجباری - بین ۹ تا ۶۰ سال):", reply_markup=ReplyKeyboardRemove())
-        return EDITING_PROFILE_AGE
+    # 🟢 هدایت به فیلد بعدی (فراخوانی مجدد تابع مرکزی)
+    if not await check_mandatory_profile(context):
+         return await start_mandatory_profile_setup(update, context)
     else:
-        return await display_profile_and_menu(update, context)
+         # اگر در حین ویرایش پروفایل بود، به منوی ویرایش برگردد.
+         await update.message.reply_text("منوی پروفایل:", reply_markup=PROFILE_MENU_MARKUP)
+         return EDITING_PROFILE_MENU
+
 
 async def get_mandatory_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """دریافت سن اجباری/ویرایش سن."""
+    """دریافت سن اجباری/ویرایش سن. (✅ اصلاح شده: فراخوانی start_mandatory_profile_setup)"""
     try:
         age = int(update.message.text.strip())
         if not (9 <= age <= 60):
@@ -940,15 +946,15 @@ async def get_mandatory_age(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     context.user_data['profile']['age'] = age
     # 🆕 بروزرسانی زمان ثبت/ویرایش پروفایل
     context.user_data['profile']['profile_update_time'] = datetime.now()
-    await update.message.reply_text(f"✅ سن شما **{age}** سال ثبت شد.", parse_mode='Markdown')
+    await update.message.reply_text(f"✅ سن شما **{age}** سال ثبت شد. در حال رفتن به مرحله بعد...", parse_mode='Markdown')
     
-    # تعیین گام بعدی
-    if context.user_data['profile']['province'] in [None, '[تنظیم‌نشده]']:
-        await update.message.reply_text("لطفاً **استان** خود را از لیست انتخاب کنید (اجباری):", 
-                                        reply_markup=generate_province_markup(is_mandatory=True, current_state=EDITING_PROFILE_PROVINCE), parse_mode='Markdown')
-        return EDITING_PROFILE_PROVINCE
+    # 🟢 هدایت به فیلد بعدی (فراخوانی مجدد تابع مرکزی)
+    if not await check_mandatory_profile(context):
+         return await start_mandatory_profile_setup(update, context)
     else:
-        return await display_profile_and_menu(update, context)
+         # اگر در حین ویرایش پروفایل بود، به منوی ویرایش برگردد.
+         await update.message.reply_text("منوی پروفایل:", reply_markup=PROFILE_MENU_MARKUP)
+         return EDITING_PROFILE_MENU
 
 async def geography_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """مدیریت انتخاب استان و شهر با دکمه‌های شیشه‌ای."""
@@ -965,14 +971,20 @@ async def geography_callback_handler(update: Update, context: ContextTypes.DEFAU
 
     if data.startswith('prov_sel:'):
         province = data.split(':')[1]
-        is_mandatory = (context.user_data['profile']['province'] in [None, '[تنظیم‌نشده]'])
+        
+        # تعیین اینکه آیا این انتخاب بخشی از تکمیل اجباری است یا ویرایش
+        is_mandatory = (context.user_data['profile']['province'] in [None, '[تنظیم‌نشده]']) or (context.bot.send_message.state == EDITING_PROFILE_PROVINCE)
         
         context.user_data['temp_province'] = province
         
         await edit_message_safely(query, f"✅ استان شما **{province}** انتخاب شد.\n\nلطفاً **شهر** خود را از لیست انتخاب کنید:", 
                                       generate_city_markup(province, is_mandatory, GET_MANDATORY_CITY))
         
-        return GET_MANDATORY_CITY 
+        # اگر در حالت تکمیل اجباری بود، به حالت دریافت شهر برود
+        if is_mandatory:
+            return GET_MANDATORY_CITY
+        # اگر در حالت ویرایش بود، به حالت دریافت شهر برود
+        return EDITING_PROFILE_CITY
             
     elif data.startswith('city_sel:'):
         city = data.split(':')[1]
@@ -985,10 +997,12 @@ async def geography_callback_handler(update: Update, context: ContextTypes.DEFAU
         
         await edit_message_safely(query, f"✅ شهر شما **{city}** از استان **{province}** با موفقیت ثبت شد.", None)
         
-        # تعیین گام بعدی
+        # 🟢 تعیین گام بعدی (✅ اصلاح شده: فراخوانی start_mandatory_profile_setup)
         if not await check_mandatory_profile(context):
+            # اگر هنوز اجباری‌ها کامل نشده‌اند، به فیلد بعدی برود
             return await start_mandatory_profile_setup(update, context)
         else:
+            # اگر در حالت ویرایش بود، به منوی ویرایش بازگردد
             await context.bot.send_message(user_id, "منوی پروفایل:", reply_markup=PROFILE_MENU_MARKUP)
             return EDITING_PROFILE_MENU
             
@@ -998,7 +1012,11 @@ async def geography_callback_handler(update: Update, context: ContextTypes.DEFAU
         await edit_message_safely(query, "❌ لغو شد. لطفاً دوباره **استان** خود را انتخاب کنید:", 
                                       generate_province_markup(is_mandatory, EDITING_PROFILE_PROVINCE))
         
-        return EDITING_PROFILE_PROVINCE
+        # اگر در حالت تکمیل اجباری بود، به حالت EDITING_PROFILE_PROVINCE برود
+        if is_mandatory:
+            return EDITING_PROFILE_PROVINCE
+        # اگر در حالت ویرایش بود، به حالت EDITING_PROFILE_CITY برود (چون از آنجا به اینجا آمده)
+        return EDITING_PROFILE_CITY 
 
     return MAIN_MENU_SELECT 
 
